@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Unity修行中：パリィ＆コマンドバトル Ver.11</title>
+    <style>
+        body { background: #050505; color: white; display: flex; flex-direction: column; align-items: center; font-family: 'Arial Black', sans-serif; overflow: hidden; user-select: none; }
+        h1 { margin: 5px 0; font-size: 14px; color: #555; font-weight: normal; font-family: sans-serif; }
+        
+        #game-container { 
+            position: relative; width: 600px; height: 400px; 
+            background: radial-gradient(circle at center, #2a2a2a 0%, #111 100%); 
+            border: 2px solid #444; 
+            box-shadow: 0 0 30px rgba(0,0,0,0.8); 
+        }
+        canvas { display: block; }
+        
+        /* UI部分 */
+        #ui-bar { display: flex; gap: 12px; justify-content: center; margin-top: 10px; }
+        .skill-box { 
+            position: relative; width: 65px; height: 65px; 
+            background: #222; border: 2px solid #555; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center; 
+            border-radius: 8px; box-shadow: 0 4px 0 #000;
+            transition: transform 0.1s;
+        }
+        .skill-box.active { transform: translateY(4px); box-shadow: 0 0 0 #000; border-color: white !important; }
+        
+        .skill-key { font-size: 28px; color: white; text-shadow: 0 0 5px currentColor; line-height: 1; }
+        .skill-name { font-size: 9px; color: #aaa; margin-top: 2px; text-transform: uppercase; }
+        .cooldown-overlay { position: absolute; bottom: 0; left: 0; width: 100%; height: 0%; background: rgba(0, 0, 0, 0.85); transition: height 0.05s; border-radius: 6px; }
+        
+        /* QTE表示 */
+        #qte-display { 
+            display: none; position: absolute; top: 35%; left: 50%; transform: translate(-50%, -50%); 
+            background: rgba(0,0,0,0.9); padding: 15px 40px; 
+            border: 2px solid white; text-align: center; 
+            border-radius: 4px; z-index: 100;
+            box-shadow: 0 0 30px rgba(255,255,255,0.2);
+        }
+        .qte-title { font-size: 12px; color: #aaa; margin-bottom: 5px; letter-spacing: 3px; }
+        .qte-char { font-size: 42px; margin: 0 5px; color: #444; display: inline-block; width: 45px; transition: 0.1s; }
+        .qte-active { color: #fff; transform: scale(1.4); text-shadow: 0 0 15px #fff; }
+        .qte-done { color: #888; transform: scale(0.8); }
+
+        /* ガードゲージ */
+        #guard-heat { width: 600px; height: 4px; background: #333; margin-top: 8px; border-radius: 2px; overflow: hidden; }
+        #guard-heat-bar { width: 0%; height: 100%; background: #0af; }
+
+        #msg-log { 
+            position: absolute; top: 40px; width: 100%; 
+            text-align: center; font-size: 32px; font-style: italic; 
+            pointer-events: none; z-index: 50; 
+            text-shadow: 3px 3px 0 #000; letter-spacing: -1px;
+        }
+
+        .shake { animation: shake 0.3s cubic-bezier(.36,.07,.19,.97) both; }
+        @keyframes shake { 
+            10%, 90% { transform: translate3d(-2px, -1px, 0); } 
+            20%, 80% { transform: translate3d(3px, 2px, 0); } 
+            30%, 50%, 70% { transform: translate3d(-5px, -3px, 0); } 
+            40%, 60% { transform: translate3d(5px, 3px, 0); } 
+        }
+    </style>
+</head>
+<body>
+    <h1>矢印:移動 | Z:攻(5) X:必(15) C:縛 V:守</h1>
+    <div id="game-container">
+        <canvas id="gameCanvas" width="600" height="400"></canvas>
+        <div id="qte-display">
+            <div id="qte-title" class="qte-title">INPUT CODE</div>
+            <div id="qte-sequence"></div>
+        </div>
+        <div id="msg-log"></div>
+    </div>
+    
+    <div id="guard-heat"><div id="guard-heat-bar"></div></div>
+
+    <div id="ui-bar">
+        <div class="skill-box" id="skill-z" style="border-color: #f55;">
+            <span class="skill-key" style="color:#f55">Z</span><span class="skill-name">SHOT</span>
+            <div class="cooldown-overlay" id="cd-z"></div>
+        </div>
+        <div class="skill-box" id="skill-x" style="border-color: gold;">
+            <span class="skill-key" style="color:gold">X</span><span class="skill-name">ULT</span>
+            <div class="cooldown-overlay" id="cd-x"></div>
+        </div>
+        <div class="skill-box" id="skill-c" style="border-color: violet;">
+            <span class="skill-key" style="color:violet">C</span><span class="skill-name">BIND</span>
+            <div class="cooldown-overlay" id="cd-c"></div>
+        </div>
+        <div class="skill-box" id="skill-v" style="border-color: #0af;">
+            <span class="skill-key" style="color:#0af">V</span><span class="skill-name">GUARD</span>
+            <div class="cooldown-overlay" id="cd-v"></div>
+        </div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const gameContainer = document.getElementById('game-container');
+    const qteDisplay = document.getElementById('qte-display');
+    const qteTitle = document.getElementById('qte-title');
+    const qteSeqDiv = document.getElementById('qte-sequence');
+    const msgLog = document.getElementById('msg-log');
+
+    const player = { 
+        x: 300, y: 350, size: 18, color: '#eee', speed: 5,
+        hp: 100, maxHp: 100,
+        state: 'alive', 
+        spawnTimer: 0,
+        scale: 1
+    };
+    let keys = {};
+    
+    let isGuarding = false;
+    let guardHeat = 0;
+    let guardOverheated = false;
+
+    let bullets = []; 
+    let myBullets = []; 
+    let particles = []; 
+    let shockwaves = []; 
+
+    const skills = {
+        z: { current: 0, max: 8 },    
+        x: { current: 0, max: 900 },  
+        c: { current: 0, max: 600 },  
+        v: { current: 0, max: 60 }    
+    };
+
+    let qte = { active: false, type: '', sequence: [], index: 0 };
+
+    const enemy = { 
+        x: 300, y: 80, size: 30, 
+        color: '#e44', 
+        shootTimer: 0, 
+        isFrozen: false, freezeTimer: 0, 
+        flash: 0, 
+        hp: 100, maxHp: 100,
+        state: 'alive', 
+        spawnTimer: 0,
+        scale: 1
+    };
+
+    window.addEventListener('keydown', e => {
+        if(e.repeat) return;
+        if(player.state !== 'alive') return; 
+        const key = e.key.toUpperCase().replace('ARROW', '');
+        keys[key] = true;
+
+        const uiBtn = document.getElementById('skill-' + key.toLowerCase());
+        if(uiBtn) uiBtn.classList.add('active');
+
+        if(qte.active) {
+            handleQTE(key);
+            return;
+        }
+
+        if (key === 'Z') trySkill('z');
+        if (key === 'X') trySkill('x');
+        if (key === 'C') trySkill('c');
+        if (key === 'V') {
+            if(!guardOverheated) isGuarding = true;
+        }
+    });
+
+    window.addEventListener('keyup', e => {
+        const key = e.key.toUpperCase().replace('ARROW', '');
+        keys[key] = false;
+
+        const uiBtn = document.getElementById('skill-' + key.toLowerCase());
+        if(uiBtn) uiBtn.classList.remove('active');
+        
+        if (key === 'V') {
+            if (isGuarding) {
+                isGuarding = false;
+                checkJustGuard();
+            }
+        }
+    });
+
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    function update() {
+        if (player.state === 'alive') {
+            if (!qte.active) {
+                if (keys['UP'] && player.y > 0) player.y -= player.speed;
+                if (keys['DOWN'] && player.y < canvas.height) player.y += player.speed;
+                if (keys['LEFT'] && player.x > 0) player.x -= player.speed;
+                if (keys['RIGHT'] && player.x < canvas.width) player.x += player.speed;
+            }
+        } else if (player.state === 'dying') {
+            player.spawnTimer--;
+            if (player.spawnTimer <= 0) {
+                player.state = 'spawning';
+                player.spawnTimer = 60; 
+                player.scale = 0;
+                player.hp = player.maxHp;
+                bullets = [];
+                myBullets = [];
+                if(enemy.state === 'alive') enemy.hp = enemy.maxHp; 
+                showLog("REBOOT...", "cyan");
+            }
+        } else if (player.state === 'spawning') {
+            player.spawnTimer--;
+            player.scale += 1/60;
+            if(Math.random() < 0.5) {
+                createParticles(player.x + (Math.random()-0.5)*30, player.y + (Math.random()-0.5)*30, "cyan", 1);
+            }
+            if(player.spawnTimer <= 0) {
+                player.state = 'alive';
+                player.scale = 1;
+                showLog("SYSTEM READY", "#fff");
+            }
+        }
+
+        for (let k in skills) {
+            if (skills[k].current > 0) skills[k].current--;
+            updateUI(k);
+        }
+
+        if (isGuarding) {
+            guardHeat += 2.0;
+            if (guardHeat >= 100) guardBreak();
+        } else {
+            if (guardHeat > 0) guardHeat -= 1.0;
+            if (guardOverheated && guardHeat === 0) guardOverheated = false;
+        }
+        document.getElementById('guard-heat-bar').style.width = guardHeat + '%';
+        document.getElementById('guard-heat-bar').style.backgroundColor = guardOverheated ? '#f00' : (guardHeat > 80 ? '#fa0' : '#0af');
+
+        // --- 敵ロジック (追跡＆高速連射) ---
+        if (enemy.state === 'alive') {
+            if (enemy.flash > 0) enemy.flash--;
+            
+            if (enemy.isFrozen) {
+                enemy.freezeTimer--;
+                if (enemy.freezeTimer <= 0) {
+                    enemy.isFrozen = false;
+                    showLog("FREEZE OFF", "#aaa");
+                }
+            } else {
+                enemy.shootTimer++;
+                
+                // ★AI変更：プレイヤーを追尾する
+                if (player.state === 'alive') {
+                    // 少し遅れてついてくる (0.05は追従速度係数)
+                    const targetX = player.x;
+                    enemy.x += (targetX - enemy.x) * 0.08;
+                    
+                    // 画面外に行かないように
+                    if(enemy.x < 20) enemy.x = 20;
+                    if(enemy.x > 580) enemy.x = 580;
+                } else {
+                    // プレイヤーが死んでる時はゆらゆら
+                    enemy.x += Math.sin(Date.now()/500) * 2;
+                }
+
+                // ★攻撃間隔短縮 (35フレーム = 約0.6秒)
+                if(enemy.shootTimer > 35 && player.state === 'alive') {
+                    bullets.push({x: enemy.x, y: enemy.y, vy: 6, active: true}); // 弾速も少しUP
+                    enemy.shootTimer = 0;
+                }
+            }
+        } else if (enemy.state === 'dying') {
+            enemy.spawnTimer--;
+            if(enemy.spawnTimer <= 0) {
+                enemy.state = 'spawning';
+                enemy.spawnTimer = 60; 
+                enemy.x = 50 + Math.random() * 500;
+                enemy.y = 80;
+                enemy.scale = 0;
+                showLog("WARNING...", "red");
+            }
+        } else if (enemy.state === 'spawning') {
+            enemy.spawnTimer--;
+            enemy.scale += 1/60; 
+            if(Math.random() < 0.5) {
+                createParticles(enemy.x + (Math.random()-0.5)*40, enemy.y + (Math.random()-0.5)*40, "lime", 1);
+            }
+            if(enemy.spawnTimer <= 0) {
+                enemy.state = 'alive';
+                enemy.scale = 1;
+                enemy.hp = enemy.maxHp;
+                enemy.isFrozen = false;
+                showLog("ENEMY SPAWNED!", "#0f0");
+            }
+        }
+
+        bullets.forEach(b => {
+            b.y += b.vy;
+            const dist = Math.sqrt((b.x - player.x)**2 + (b.y - player.y)**2);
+            if (b.active && player.state === 'alive' && dist < player.size + 10) {
+                if (isGuarding) {
+                    showLog("BLOCKED!", "#0af");
+                    createParticles(b.x, b.y, "cyan", 5);
+                    b.active = false;
+                } else {
+                    player.hp -= 20;
+                    showLog("DAMAGE 20!!", "#f55");
+                    shakeScreen();
+                    b.active = false;
+                    
+                    if(player.hp <= 0) {
+                        player.hp = 0;
+                        player.state = 'dying';
+                        player.spawnTimer = 90; 
+                        isGuarding = false; 
+                        showLog("CRITICAL ERROR", "red");
+                        createParticles(player.x, player.y, "cyan", 50); 
+                        createShockwave(player.x, player.y);
+                    }
+                }
+            }
+        });
+        bullets = bullets.filter(b => b.active && b.y < canvas.height);
+
+        myBullets.forEach(b => {
+            if(enemy.state !== 'alive') return; 
+
+            b.y -= b.vy;
+            const dx = b.x - enemy.x;
+            const dy = b.y - enemy.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            
+            if (dist < enemy.size + b.size) { 
+                createParticles(b.x, b.y, b.isUltimate ? "gold" : "#f55", b.isUltimate ? 30 : 10);
+                enemy.flash = 5; 
+                let dmg = b.isUltimate ? 15 : 5; 
+                enemy.hp -= dmg;
+                
+                if(b.isUltimate) {
+                    showLog("HIT! 15dmg", "gold");
+                    shakeScreen();
+                }
+                b.active = false;
+
+                if (enemy.hp <= 0) {
+                    enemy.hp = 0;
+                    enemy.state = 'dying';
+                    enemy.spawnTimer = 60; 
+                    showLog("DESTROYED!!", "#fff");
+                    shakeScreen();
+                    createParticles(enemy.x, enemy.y, "orange", 50);
+                    createParticles(enemy.x, enemy.y, "white", 30);
+                    createShockwave(enemy.x, enemy.y); 
+                }
+            }
+        });
+        myBullets = myBullets.filter(b => b.active && b.y > -100);
+
+        particles.forEach(p => {
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life--;
+        });
+        particles = particles.filter(p => p.life > 0);
+
+        shockwaves.forEach(s => {
+            s.r += 5; 
+            s.alpha -= 0.05; 
+        });
+        shockwaves = shockwaves.filter(s => s.alpha > 0);
+    }
+
+    function draw() {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 1;
+        for(let i=0; i<600; i+=40) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,400); ctx.stroke(); }
+        for(let i=0; i<400; i+=40) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(600,i); ctx.stroke(); }
+
+        shockwaves.forEach(s => {
+            ctx.strokeStyle = `rgba(255, 200, 100, ${s.alpha})`;
+            ctx.lineWidth = 10;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+            ctx.stroke();
+        });
+
+        if (player.state === 'alive' || player.state === 'spawning') {
+            let size = player.size * player.scale;
+            if(player.state === 'spawning') {
+                ctx.strokeStyle = `rgba(0, 255, 255, ${Math.random()})`; 
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, 30, 0, Math.PI*2);
+                ctx.stroke();
+                ctx.fillStyle = "cyan";
+                ctx.fillRect(player.x - 1, player.y, 2, -400); 
+            }
+            ctx.fillStyle = isGuarding ? '#0af' : player.color;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, size, 0, Math.PI*2);
+            ctx.fill();
+            if(isGuarding) {
+                ctx.strokeStyle = '#0af';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, size + 12, 0, Math.PI*2);
+                ctx.stroke();
+            }
+        }
+
+        if (enemy.state === 'alive' || enemy.state === 'spawning') {
+            let size = enemy.size * enemy.scale;
+            let ex = enemy.x;
+            let ey = enemy.y;
+            
+            if(enemy.state === 'spawning') {
+                ctx.strokeStyle = `rgba(0, 255, 0, ${Math.random()})`;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(ex, ey, 40, 0, Math.PI*2);
+                ctx.stroke();
+                ctx.fillStyle = "#0f0";
+                ctx.fillRect(ex - 2, 0, 4, ey);
+            }
+
+            if (enemy.flash > 0) ctx.fillStyle = "white";
+            else if (enemy.isFrozen) ctx.fillStyle = "#0af";
+            else ctx.fillStyle = enemy.color;
+            
+            if(enemy.isFrozen) ex += (Math.random()-0.5)*4;
+            
+            ctx.fillRect(ex - size, ey - size, size*2, size*2);
+
+            if(enemy.state === 'alive') {
+                drawHpBar(ex, ey - size - 20, enemy.hp, enemy.maxHp, false);
+            }
+        }
+
+        drawHpBar(300, 380, player.hp, player.maxHp, true);
+
+        ctx.fillStyle = '#f55';
+        bullets.forEach(b => {
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, 8, 0, Math.PI*2);
+            ctx.fill();
+        });
+
+        myBullets.forEach(b => {
+            if (b.isUltimate) {
+                ctx.fillStyle = '#ffeda0';
+                ctx.shadowBlur = 30;
+                ctx.shadowColor = "orange";
+                ctx.beginPath();
+                ctx.arc(b.x, b.y, b.size, 0, Math.PI*2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            } else {
+                ctx.fillStyle = '#f55';
+                ctx.fillRect(b.x-4, b.y, 8, 16);
+            }
+        });
+
+        particles.forEach(p => {
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.life / 20;
+            ctx.fillRect(p.x, p.y, p.size, p.size);
+            ctx.globalAlpha = 1.0;
+        });
+    }
+
+    function drawHpBar(x, y, hp, max, isPlayer) {
+        const w = isPlayer ? 300 : 60;
+        const h = isPlayer ? 10 : 8;
+        const bx = x - w/2;
+        const by = y;
+        ctx.fillStyle = isPlayer ? "#003" : "#500";
+        ctx.fillRect(bx, by, w, h);
+        const ratio = Math.max(0, hp / max);
+        ctx.fillStyle = isPlayer ? "cyan" : (ratio > 0.5 ? "#0f0" : (ratio > 0.2 ? "orange" : "red"));
+        ctx.fillRect(bx, by, w * ratio, h);
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bx, by, w, h);
+        if(isPlayer) {
+            ctx.fillStyle = "white";
+            ctx.font = "12px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText(`HP: ${hp} / ${max}`, x, by - 5);
+        }
+    }
+
+    function trySkill(key) {
+        if (qte.active || player.state !== 'alive') return;
+        if (guardOverheated && key === 'V') return;
+        if (skills[key].current > 0) return;
+
+        if (key === 'z') {
+            myBullets.push({x: player.x, y: player.y, vy: 10, size: 5, active: true, isUltimate: false});
+            skills.z.current = skills.z.max;
+        }
+        else if (key === 'x') {
+            startQTE('ULT', ['Z', 'C']);
+            skills.x.current = skills.x.max;
+        }
+        else if (key === 'c') {
+            startQTE('BIND', ['Z', 'X']);
+            skills.c.current = skills.c.max;
+        }
+    }
+
+    function checkJustGuard() {
+        const justDist = 60;
+        let success = false;
+        bullets.forEach(b => {
+            if (!b.active) return;
+            const dist = Math.sqrt((b.x - player.x)**2 + (b.y - player.y)**2);
+            if (dist < justDist) {
+                success = true;
+                b.active = false;
+                createParticles(b.x, b.y, "gold", 20); 
+            }
+        });
+
+        if (success) {
+            showLog("⚡JUST GUARD!!⚡", "gold");
+            for(let k in skills) skills[k].current = 0;
+            guardHeat = 0;
+            document.body.style.backgroundColor = "#444";
+            setTimeout(() => document.body.style.backgroundColor = "#050505", 100);
+        }
+    }
+
+    function guardBreak() {
+        isGuarding = false;
+        guardOverheated = true;
+        skills.v.current = 120; 
+        showLog("GUARD BROKEN...", "gray");
+    }
+
+    function startQTE(type, candidates) {
+        qte.active = true;
+        qte.type = type;
+        qte.index = 0;
+        qte.sequence = [];
+        qteTitle.innerText = (type === 'ULT') ? "ULTIMATE CODE" : "BIND CODE";
+        qteTitle.style.color = (type === 'ULT') ? "gold" : "violet";
+        for(let i=0; i<3; i++) qte.sequence.push(candidates[Math.floor(Math.random() * candidates.length)]);
+        updateQTEDisplay();
+        qteDisplay.style.display = 'block';
+    }
+
+    function handleQTE(inputKey) {
+        if (inputKey === qte.sequence[qte.index]) {
+            qte.index++;
+            updateQTEDisplay();
+            if (qte.index >= qte.sequence.length) finishQTE(true);
+        } else {
+            finishQTE(false);
+        }
+    }
+
+    function finishQTE(success) {
+        qte.active = false;
+        qteDisplay.style.display = 'none';
+        if (success) {
+            if (qte.type === 'ULT') {
+                showLog("🔥METEOR!!🔥", "gold");
+                myBullets.push({ x: player.x, y: player.y, vy: 6, size: 50, active: true, isUltimate: true });
+            } else if (qte.type === 'BIND') {
+                showLog("❄️FROZEN!!❄️", "cyan");
+                if(enemy.state === 'alive') {
+                    enemy.isFrozen = true;
+                    enemy.freezeTimer = 180; 
+                }
+            }
+        } else {
+            showLog("FAILED...", "gray");
+        }
+    }
+
+    function updateQTEDisplay() {
+        let html = "";
+        qte.sequence.forEach((char, i) => {
+            let cls = "qte-char";
+            if (i < qte.index) cls += " qte-done";
+            else if (i === qte.index) cls += " qte-active";
+            html += `<span class="${cls}">${char}</span>`;
+        });
+        qteSeqDiv.innerHTML = html;
+    }
+
+    function createParticles(x, y, color, count) {
+        for(let i=0; i<count; i++) {
+            particles.push({
+                x: x, y: y,
+                vx: (Math.random() - 0.5) * 12, 
+                vy: (Math.random() - 0.5) * 12,
+                life: 30 + Math.random() * 20,
+                color: color,
+                size: 3 + Math.random() * 5
+            });
+        }
+    }
+
+    function createShockwave(x, y) {
+        shockwaves.push({x: x, y: y, r: 10, alpha: 1.0});
+    }
+
+    function shakeScreen() {
+        gameContainer.classList.remove('shake');
+        void gameContainer.offsetWidth; 
+        gameContainer.classList.add('shake');
+    }
+
+    function updateUI(key) {
+        const el = document.getElementById('cd-' + key);
+        const ratio = skills[key].current / skills[key].max;
+        el.style.height = (ratio * 100) + '%';
+    }
+
+    function showLog(text, color) {
+        msgLog.innerText = text;
+        msgLog.style.color = color;
+        msgLog.style.opacity = 1;
+        msgLog.style.animation = 'none';
+        msgLog.offsetHeight; 
+        msgLog.style.animation = 'pop 0.2s ease-out';
+        setTimeout(() => msgLog.style.opacity = 0, 1000); 
+    }
+
+    loop();
+</script>
+</body>
+</html>
